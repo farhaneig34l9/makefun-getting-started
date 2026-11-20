@@ -257,6 +257,222 @@ A `202` is not the end. Poll until the entry is `scored` or `rejected`.
 
 ---
 
+## 8. Troubleshooting: the bundle errors you will actually hit
+
+Each entry below gives the **symptom** (the text the kit prints), the **cause**, and the **fix**. Commands are copy-ready. Run everything from the kit directory unless a step says otherwise.
+
+```
+cd ~/code/bring-the-humans-02-kit
+```
+
+### 8.1 `bundle` finds no session at all
+
+**Symptom.** `--dry-run` lists nothing, or `bundle` stops with:
+
+```
+no session file was recorded: was your agent working in this repository?
+```
+
+or, from a recording:
+
+```
+recording <id> holds no session file (no session file was recorded: was your agent working in this repository?): record again with makefun record running while your agent works in this repository
+```
+
+**Cause.** The agent is not writing its log where `bundle` reads. Three usual reasons: you are in Superbot's **cloud computer** (its journal lives on the VM at `/space/sessions`, and on some cloud computers that directory does not exist); the session's working directory is not the repository, so the log is not matched to it; or the client keeps sessions somewhere `bundle` does not know.
+
+**Fix.** Confirm first, then point `bundle` at the log by hand.
+
+```
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --dry-run
+```
+
+If that lists nothing, find the session file and name it explicitly. `bundle --help` lists the directory flag for each harness it reads (`--superbot-dir` among them); locate the client's data directory first:
+
+```
+node cli/makefun.mjs help bundle | grep -i superbot
+find ~ -maxdepth 4 -type d -iname "*superbot*" 2>/dev/null
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --session <path-to-session-file> --dry-run
+```
+
+If the directory exists but `bundle` still misses it, name the directory:
+
+```
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --superbot-dir <dir> --dry-run
+```
+
+**Do not build the entry before this prints a session.** A whole build in a session `bundle` cannot see is exactly how the first attempt was lost.
+
+### 8.2 Session detected, but it began before the competition opened
+
+**Symptom.** `check` reports `thinking_in_window` failing, with a timestamp outside the window.
+
+**Cause.** The competition opened at **`2026-11-18T10:30:00Z`**. Every message timestamp must fall between that moment and your submission time, allowing **±60 s** of clock skew. A session resumed from an older conversation carries its old timestamps.
+
+**Fix.** Start a **new** session — do not continue an old thread. Then verify the window before building:
+
+```
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --dry-run
+```
+
+The dry run prints the run record as it stands, including the opening prompt and its origin. If the earliest timestamp is before `2026-11-18T10:30:00Z`, that session cannot be used. Also check your machine's clock — a clock more than 60 s off fails the same check.
+
+### 8.3 Fewer than 5 assistant turns
+
+**Symptom.** `check` reports `thinking_turns` failing: *"Too few assistant turns with text or thinking"*.
+
+**Cause.** The gate needs **at least 5 assistant turns that carry text or thinking**. A turn that only calls tools does not count, and a replayed copy of a turn (same source, message id and time) counts once. A build driven entirely by tool calls with no prose produces zero counted turns.
+
+**Fix.** Continue the **same** session and have the agent explain as it works — ask it to describe what it is doing and why, in separate messages. Then re-bundle:
+
+```
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --out transcripts.tar.gz --harness superbot --harness-version <version> --provider <provider> --model <model-id> --effort <level>
+node cli/makefun.mjs check --kit . --repo ~/code/makefun-getting-started --transcripts transcripts.tar.gz
+```
+
+Do not upload a summary of the session — upload the whole session.
+
+### 8.4 Fewer than 2 revisions
+
+**Symptom.** `check` reports `thinking_revised` failing: *"No file revised across assistant messages"*.
+
+**Cause.** Some counted file must take its final content from **at least 2 assistant messages that write or edit it**. A file written once in full and never touched counts **1**, however many times it was rewritten whole before. Only a **tool call** writes a file — code the assistant merely shows in its reply text, a fenced block included, writes nothing.
+
+**Fix.** In the same session, have the agent make a real edit to `README.md` in a **separate message** from the first write:
+
+> Edit `README.md`: tighten the wording and make sure the referral code `9wsjd4r6` appears at least twice. Show me the diff.
+
+The edit must carry the old and new text (or a patch) for that file. Then re-bundle and re-check.
+
+### 8.5 Less than 30% of lines authored by the agent
+
+**Symptom.** `check` reports `thinking_reproduces` failing: *"Transcripts do not account for the code"*.
+
+**Cause.** At least **30%** of counted lines must be authored by the agent, at most **40%** of text-file lines may be unwritten, and `README.md` needs at least **1** authored line. Pasting a finished README in — or having the agent re-type text it was shown — leaves the file's lines unaccounted for.
+
+**Fix.** Let the agent **write** the file itself in the session, then revise it. If you pasted content, delete it and have the agent write it from scratch:
+
+> Delete `README.md` and write it again yourself from what you know about make.fun. Do not copy text I give you.
+
+Then revise it (8.4) and re-bundle.
+
+### 8.6 Repository created before the competition opened
+
+**Symptom.** `check` reports `repo_created_after_open` failing.
+
+**Cause.** The check reads the repository's **creation date**, not its commit date. A repo created before `2026-11-18T10:30:00Z` fails no matter what you push into it.
+
+**Fix.** Create a **new** repository after the opening and push there. Renaming or re-using the old one does not help — the creation date travels with it.
+
+```
+gh repo create makefun-getting-started-2 --public --description "A getting-started guide to make.fun"
+```
+
+Then update `--repo-url` in the submit command to the new URL.
+
+### 8.7 Node is too old
+
+**Symptom.** The kit crashes on import, or a Zstandard log fails to read:
+
+```
+this Node has no zstd support (node:zlib zstdDecompressSync)
+a Zstandard log needs a Node with node:zlib zstdDecompressSync (22.15 or later; this is v20.20.2)
+```
+
+**Cause.** The kit imports `createZstdCompress` from `node:zlib`, which older Node does not have. **Node 22.18 or newer is required.**
+
+**Fix.** Check, then upgrade:
+
+```
+node --version
+nvm install 22 && nvm use 22
+node --version
+```
+
+Without `nvm`, install from https://nodejs.org. Re-run the failing command afterwards — nothing needs rebuilding.
+
+### 8.8 `bundle` succeeds but `transcripts_present` still fails on submit
+
+**Symptom.** `bundle` writes `transcripts.tar.gz` without complaint, but `status` shows `rejected` with `transcripts_present` failing: *"No transcripts parsed"*.
+
+**Cause.** The bundle was written but carries no session the server can parse — usually because the archive was built from a session `bundle` found but could not read, or because `submit` was given a different file than the one `check` validated.
+
+**Fix.** Validate the exact file you are about to submit, and confirm the session count:
+
+```
+node cli/makefun.mjs check --kit . --repo ~/code/makefun-getting-started --transcripts transcripts.tar.gz
+tar tzf transcripts.tar.gz | head -20
+```
+
+`check` must show `transcripts_present` passing **before** you submit. If it fails locally, the server will fail it too — fix the session, not the submission.
+
+### 8.9 `bundle` refuses to write a bundle
+
+**Symptom.** `bundle` stops and names a missing flag, e.g. *"bundle writes no bundle while one of the five is missing"*.
+
+**Cause.** Five facts must be real values: **harness, harness version, provider, model, effort**. Placeholder words declare nothing — `auto`, `custom`, `default`, `unknown`, `none`, `null`, `n/a`, in any case. (`--effort default` and `--effort none` are the two exceptions: they are real effort levels.)
+
+**Fix.** Pass the real values:
+
+```
+node cli/makefun.mjs bundle --repo ~/code/makefun-getting-started --out transcripts.tar.gz \
+  --harness superbot --harness-version <real-version> \
+  --provider anthropic --model <real-model-id> --effort <real-level>
+```
+
+`--harness-version unknown` is no version. The provider is a plain lowercase name (`anthropic`, `openai`, `google`, `xai`, `meta`, `deepseek`, `mistral`, `openrouter`), never an address or a display name.
+
+### 8.10 Submit returns HTTP 422
+
+**Symptom.** `submit` exits non-zero with `HTTP 422` and a problem body.
+
+**Cause.** A check failed. `422` is a **rejection**, not a retry hint. The body's `problem.checks` lists every check with its verdict and its `fix`.
+
+**Fix.** Read the failing check, apply its fix, and submit again while `problem.retry.allowed` is true:
+
+```
+node cli/makefun.mjs status --submission <id>
+```
+
+Nothing needs rebuilding for a metadata failure (a missing topic, a wrong About) — fix the repository and resend. A transcript failure does need the session continued.
+
+### 8.11 HTTP 202 — and why it is not acceptance
+
+**Symptom.** `submit` prints `202` and you assume the entry passed.
+
+**Cause.** **`202` means the request was received, not that the entry passed.** The entry is queued for checking. The first attempt on this repository was reported as accepted on a `202` and was in fact **rejected** with `422 — No transcripts parsed`.
+
+**Fix.** Always poll until the entry reaches a terminal state:
+
+```
+node cli/makefun.mjs status --submission <id>
+```
+
+`submitted` → `checked` → `scored`, or `rejected`. Only `scored` means it is ranked.
+
+### 8.12 Quota exhausted
+
+**Symptom.** `submit` is refused with `HTTP 429`, or a quota problem naming a cap.
+
+**Cause.** At most **5 submissions per UTC day** and **10 in all** per account. Every entry taken in counts toward both — **whether or not it passes**. A quota refusal itself never counts.
+
+**Fix.** Read which cap the refusal names:
+
+- **A day's cap** lifts when the next UTC day starts. Wait until the `retry_at` it gives, then submit again before the deadline. On the entries' last UTC day it does not lift, and the refusal says so.
+- **The competition's total** and the **hard limit of 10** do not lift by waiting. Once either is reached, no more entries are taken from that account in that competition.
+
+Check what is left before spending an attempt:
+
+```
+node cli/makefun.mjs status --competition bring-the-humans-02
+```
+
+That prints your entry quota there: the entries you have made and kept, what is left of today's cap (and when the next UTC day starts), of the competition's total and under the hard limit, `entries_left`, and whether a submit now would be taken.
+
+**Never submit to "see if it works."** A rejected entry still burns an attempt. Run `check` locally first — it is free.
+
+---
+
 ## Reference
 
 - Skill and full rules: https://make.fun/skill.md
